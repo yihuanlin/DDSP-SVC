@@ -257,11 +257,31 @@ class Audio2ContentVec768L12():
 class Audio2ContentVec768L12TTA2X():
     def __init__(self, path, h_sample_rate=16000, h_hop_size=160, device='cpu'):
         self.device = device
+        
+        # -------------------------------------------------------------
+        # If the script tries to feed us the old Fairseq .pt file, 
+        # we forcefully swap it to the HuggingFace .bin file.
+        # -------------------------------------------------------------
+        if "checkpoint_best_legacy_500.pt" in path:
+            fallback_bin = "pretrain/contentvec/pytorch_model.bin"
+            print(f" [Intercept] Ignored old path: {path}")
+            print(f" [Intercept] Forcing new HF path: {fallback_bin}")
+            path = fallback_bin
+        # -------------------------------------------------------------
+
         print(' [Encoder Model] Content Vec')
         print(' [Loading] ' + path)
         self.hubert = HubertModelWithFinalProj(HubertConfig())
-        checkpoint = torch.load(path)
-        self.hubert.load_state_dict(checkpoint)
+        
+        # Safely load the checkpoint
+        checkpoint = torch.load(path, map_location='cpu')
+        
+        # If it happens to be a nested dict, extract just the model weights
+        if "model" in checkpoint:
+            self.hubert.load_state_dict(checkpoint["model"])
+        else:
+            self.hubert.load_state_dict(checkpoint)
+            
         self.hubert = self.hubert.to(self.device)
         self.hubert.eval()
 

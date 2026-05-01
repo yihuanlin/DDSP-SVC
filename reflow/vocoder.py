@@ -23,15 +23,57 @@ class DotDict(dict):
 def load_model_vocoder(
         model_path,
         device='cpu'):
-    config_file = os.path.join(os.path.split(model_path)[0], 'config.yaml')
-    with open(config_file, "r") as config:
-        args = yaml.safe_load(config)
+    
+    print(' [Loading] ' + model_path)
+    ckpt = torch.load(model_path, map_location=torch.device(device))
+    
+    # 1. Determine if the file is a packed model or a standard checkpoint
+    is_packed = isinstance(ckpt, dict) and "model_dict" in ckpt and "config_dict" in ckpt
+    
+    if is_packed:
+        model_key = "cascade" if "cascade" in ckpt["model_dict"] else list(ckpt["model_dict"].keys())[0]
+        args = ckpt["config_dict"][model_key]
+        model_ckpt = ckpt["model_dict"][model_key]
+    else:
+        config_file = os.path.join(os.path.split(model_path)[0], 'config.yaml')
+        with open(config_file, "r") as config:
+            args = yaml.safe_load(config)
+        model_ckpt = ckpt
+
     args = DotDict(args)
     
-    # load vocoder
-    vocoder = Vocoder(args.vocoder.type, args.vocoder.ckpt, device=device)
+    # -------------------------------------------------------------
+    # Force ContentVec Update
+    # -------------------------------------------------------------
+    print(" [Override] Forcing use of new contentvec768l12tta2x (HuggingFace)")
+    args.data.encoder = 'contentvec768l12tta2x'
+    args.data.encoder_ckpt = 'pretrain/contentvec/pytorch_model.bin'
+    # -------------------------------------------------------------
     
-    # load model
+    # -------------------------------------------------------------
+    # Validate Vocoder Path
+    # -------------------------------------------------------------
+    vocoder_ckpt = args.vocoder.ckpt
+    vocoder_dir = os.path.dirname(vocoder_ckpt)
+    
+    # If the directory baked into the packed model doesn't exist, fall back to standard
+    if vocoder_dir and not os.path.exists(vocoder_dir):
+        print(f" [Warning] Vocoder path '{vocoder_ckpt}' from packed config not found.")
+        
+        # Change this string if your default vocoder is located elsewhere
+        fallback_path = 'pretrain/nsf_hifigan/model'
+        
+        print(f" [Warning] Falling back to default local path: '{fallback_path}'")
+        vocoder_ckpt = fallback_path
+    
+    # Save the corrected path back to args so Vocoder() init receives it properly
+    args.vocoder.ckpt = vocoder_ckpt
+    # -------------------------------------------------------------
+    
+    # 2. load vocoder using the validated path
+    vocoder = Vocoder(args.vocoder.type, vocoder_ckpt, device=device)
+    
+    # 3. load model
     if args.model.type == 'RectifiedFlow':
         model = Unit2Wav(
                     args.data.sampling_rate,
@@ -47,17 +89,15 @@ def load_model_vocoder(
                     args.model.n_aux_chans,
                     args.model.n_layers,
                     args.model.n_chans)
-                   
+                    
     else:
         raise ValueError(f" [x] Unknown Model: {args.model.type}")
         
-    print(' [Loading] ' + model_path)
-    ckpt = torch.load(model_path, map_location=torch.device(device))
     model.to(device)
-    model.load_state_dict(ckpt['model'])
+    model.load_state_dict(model_ckpt['model'])
     model.eval()
+    
     return model, vocoder, args
-
 
 class Vocoder:
     def __init__(self, vocoder_type, vocoder_ckpt, device = None):
